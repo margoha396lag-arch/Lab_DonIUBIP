@@ -1,0 +1,109 @@
+import json, struct, subprocess, sys
+from pathlib import Path
+import pytest
+from protolab import core
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def frame(pl=b"", sp=1000, dp=80, flags=0x18, frag=0, vlan=False, doff=5):
+    tcp = struct.pack(">HHIIBBHHH", sp, dp, 1, 0, doff << 4, flags, 8192, 0, 0)
+    ip = struct.pack(">BBHHHBBH4s4s", 0x45, 0, 40 + len(pl), 0, frag, 64, 6, 0, b"\x0a\0\0\1", b"\x0a\0\0\2")
+    return b"\0" * 12 + (b"\x81\x00\x00\x05\x08\x00" if vlan else b"\x08\x00") + ip + tcp + pl
+
+
+def pcap(frs):
+    b = struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1)
+    for f in frs: b += struct.pack("<IIII", 1, 0, len(f), len(f)) + f
+    return b
+
+
+def blk(t, body):
+    body += b"\0" * (-len(body) % 4); n = len(body) + 12
+    return struct.pack("<II", t, n) + body + struct.pack("<I", n)
+
+
+shb = lambda: blk(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1))
+idb = lambda lt=1, opt=b"": blk(1, struct.pack("<HHI", lt, 0, 0) + opt)
+epb = lambda f, ts=0: blk(6, struct.pack("<IIIII", 0, ts >> 32, ts & 0xFFFFFFFF, len(f), len(f)) + f)
+spb = lambda f: blk(3, struct.pack("<I", len(f)) + f)
+
+
+def w(d, name, data):
+    d = Path(d); d.mkdir(parents=True, exist_ok=True); p = d / name; p.write_bytes(data); return str(p)
+
+
+@pytest.mark.parametrize("pat", ["", "   ", "4", "zz", "414", "?? ??"])
+def test_bad_pattern(pat):                                   # BUG-001
+    with pytest.raises(ValueError): core.Hyp("h", pat).rx()
+    assert core.Hyp("h", "41").rx() and core.Hyp("h", "41 ??").rx()
+
+
+def test_pcap_validation(tmp_path):                          # BUG-005, 015
+    f = frame(b"hello"); ok = pcap([f])
+    assert core.parse(w(tmp_path, "a.pcap", ok))[0].raw == f
+    for name, data in [("t.pcap", ok[:-10]), ("e.pcap", b""), ("h.pcap", ok[:30]), ("x.pcap", b"junk" * 9)]:
+        with pytest.raises(core.CaptureError): core.parse(w(tmp_path, name, data))
+    snap = bytearray(ok); struct.pack_into("<I", snap, 24 + 12, len(f) + 50)      # caplen < origlen — допустимо
+    assert core.parse(w(tmp_path, "s.pcap", bytes(snap)))[0].raw == f
+    assert core.parse(w(tmp_path, "n.pcap", pcap([]))) == []
+
+
+def test_pcapng_blocks(tmp_path):                            # BUG-002, 003, 004, 015
+    f = frame(b"hello")
+    pk = core.parse(w(tmp_path, "a.pcapng", shb() + idb() + epb(f) + spb(f)))
+    assert [p.raw for p in pk] == [f, f] and pk[1].file_off % 4 == 0
+    ns = idb(1, struct.pack("<HH", 9, 1) + b"\x09\0\0\0" + struct.pack("<HH", 0, 0))
+    assert core.parse(w(tmp_path, "ns.pcapng", shb() + ns + epb(f, 1_000_000_000)))[0].ts == pytest.approx(1.0)
+    two = shb() + idb(101) + epb(b"x" * 20) + shb() + idb(1) + epb(f)
+    assert [p.stream for p in core.parse(w(tmp_path, "2s.pcapng", two))] == [-1, 0]   # интерфейсы не смешиваются
+    d = bytearray(shb() + idb() + epb(f)); d[-4:] = b"\0\0\0\0"
+    for name, data in [("tr.pcapng", bytes(d)), ("cut.pcapng", shb() + idb() + epb(f)[:-6])]:
+        with pytest.raises(core.CaptureError): core.parse(w(tmp_path, name, data))
+
+
+def test_all_and_overlapping_occurrences(tmp_path):          # BUG-007
+    r = core.verify(core.Hyp("h", "41 42"), w(tmp_path, "a.pcap", pcap([frame(b"ABAB")])))
+    assert (r["hits"], r["occurrences"], [e["off"] for e in r["evidence"]]) == (1, 2, [94, 96])
+    r = core.verify(core.Hyp("h", "41 42 41"), w(tmp_path, "b.pcap", pcap([frame(b"ABABA")])))
+    assert [e["off"] for e in r["evidence"]] == [94, 96]
+
+
+def test_frame_layer(tmp_path):                              # BUG-006
+    p = w(tmp_path, "a.pcap", pcap([frame(b"zz")]))
+    assert core.verify(core.Hyp("h", "0a 00 00 01"), p)["hits"] == 0
+    r = core.verify(core.Hyp("h", "0a 00 00 01", layer="frame"), p)
+    assert Path(p).read_bytes()[r["evidence"][0]["off"]:][:4] == b"\x0a\0\0\1"
+
+
+def test_headers_and_fragments(tmp_path):                    # BUG-012
+    frs = [frame(b"xx", frag=0x0064), frame(b"xx", frag=0x2000), frame(b"xx", doff=4), frame(b"hi", vlan=True)]
+    pk = core.parse(w(tmp_path, "f.pcap", pcap(frs)))
+    assert [p.stream for p in pk[:3]] == [-1, -1, -1] and pk[0].note
+    assert pk[3].payload == b"hi" and pk[3].sport == 1000 and pk[3].l3 == 18
+
+
+def test_same_name_and_project(tmp_path):                    # BUG-008, 014
+    pa = w(tmp_path / "a", "c.pcap", pcap([frame(b"AAAA")])); pb = w(tmp_path / "b", "c.pcap", pcap([frame(b"BBBB")]))
+    h = core.Hyp("h", "41 41"); ra, rb = core.verify(h, pa), core.verify(h, pb)
+    assert ra["capture_id"] != rb["capture_id"] and (ra["hits"], rb["hits"]) == (1, 0)
+    h.results = [ra, rb]; proj = tmp_path / "p.json"
+    core.save(proj, [core.cap_info(pa), core.cap_info(pb)], [h])
+    caps, hy = core.load(proj)
+    assert [r["capture_id"] for r in hy[0].results] == [ra["capture_id"], rb["capture_id"]]
+    cli = lambda: subprocess.run([sys.executable, "-m", "protolab", "verify", str(proj)], cwd=ROOT, capture_output=True).returncode
+    assert cli() == 0
+    text = proj.read_text(encoding="utf-8")
+    proj.write_text(text.replace('"hits": 1', '"hits": 2'), encoding="utf-8"); assert cli() == 1     # подмена результата
+    proj.write_text(json.dumps({"version": 1}), encoding="utf-8")
+    with pytest.raises(core.ProjectError): core.load(proj)
+    proj.write_text("{не json", encoding="utf-8")
+    with pytest.raises(core.ProjectError): core.load(proj)
+
+
+def test_progress_and_cancel(tmp_path):                      # BUG-013
+    p = w(tmp_path, "m.pcap", pcap([frame(b"A")] * 600)); calls = []
+    pk, _ = core.read_capture(p, calls.append); assert len(pk) == 600 and calls[-1] == 1.0
+    def boom(f): raise core.Cancelled()
+    with pytest.raises(core.Cancelled): core.read_capture(p, boom)
+    assert core.verify(core.Hyp("h", "41"), p, calls.append)["occurrences"] == 600

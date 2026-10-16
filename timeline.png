@@ -1,0 +1,41 @@
+"""Генерирует демо-захваты и project.json с проверенными гипотезами."""
+import struct, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from protolab import core
+D = Path(__file__).parent
+ip4 = lambda a: bytes(map(int, a.split(".")))
+
+def fr(pl, sp, dp, fl, seq, a, b):
+    tcp = struct.pack(">HHIIBBHHH", sp, dp, seq, 0, 5 << 4, fl, 8192, 0, 0)
+    ip = struct.pack(">BBHHHBBH4s4s", 0x45, 0, 40 + len(pl), 0, 0, 64, 6, 0, ip4(a), ip4(b))
+    return b"\0" * 12 + b"\x08\x00" + ip + tcp + pl
+
+def flow(t, cp, sp, msgs, ca="10.0.0.1", sa="10.0.0.2"):
+    cs, ss, o = 100, 500, []
+    o += [(t, fr(b"", cp, sp, 2, cs, ca, sa)), (t + .01, fr(b"", sp, cp, 0x12, ss, sa, ca)), (t + .02, fr(b"", cp, sp, 0x10, cs + 1, ca, sa))]
+    cs, ss, t = cs + 1, ss + 1, t + .05
+    for q, r in msgs:
+        o.append((t, fr(q, cp, sp, 0x18, cs, ca, sa))); cs += len(q); t += .03
+        o.append((t, fr(r, sp, cp, 0x18, ss, sa, ca))); ss += len(r); t += .07
+    return o + [(t, fr(b"", cp, sp, 0x11, cs, ca, sa))]
+
+def pcap(name, pk):
+    out = struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1)
+    for t, f in sorted(pk, key=lambda x: x[0]): out += struct.pack("<IIII", int(t), int(t % 1 * 1e6), len(f), len(f)) + f
+    (D / name).write_bytes(out)
+
+g = lambda ty, d, m=b"MG": m + bytes([ty, 0, len(d)]) + d
+get = lambda u: f"GET {u} HTTP/1.1\r\nHost: lab\r\n\r\n".encode()
+a = flow(0, 40001, 80, [(get("/index.html"), b"HTTP/1.1 200 OK\r\n\r\nhello"), (get("/logo.png"), b"HTTP/1.1 404 Not Found\r\n\r\n")])
+a += flow(.4, 40002, 9000, [(g(1, b"hello"), g(0x81, b"ok")), (g(2, b"temp=21.5"), g(0x82, b"ack"))])
+a += flow(.9, 40003, 9000, [(g(1, b"sensor-7"), g(0x81, b"ok"))], "10.0.0.3")
+b = flow(0, 41000, 9000, [(g(1, b"dev-A"), g(0x81, b"ok")), (g(3, b"fw=1.2.0"), g(0x83, b"done"))])
+b += flow(.5, 41001, 9000, [(g(1, b"dev-B", b"MX"), g(0x81, b"no", b"MX"))], "10.0.0.4")   # другой magic: гипотеза не сработает
+b += flow(.8, 41002, 80, [(get("/status"), b"HTTP/1.1 200 OK\r\n\r\nup")])
+pcap("demo1.pcap", a); pcap("demo2.pcap", b)
+hy = [core.Hyp("Кадр MG: magic, тип, 0, длина", "4d 47 ?? 00 ??", 9000, "Заголовок: 'MG', тип сообщения, нулевой байт, длина данных"),
+      core.Hyp("HTTP GET-запрос", "47 45 54 20", 80, "Метод GET в начале запроса")]
+for h in hy: h.results = [core.verify(h, D / n) for n in ("demo1.pcap", "demo2.pcap")]
+core.save(D / "project.json", [core.cap_info(D / n) for n in ("demo1.pcap", "demo2.pcap")], hy)
+print([(h.name, [(r["hits"], r["scope"]) for r in h.results]) for h in hy])

@@ -1,0 +1,140 @@
+{
+ "version": 2,
+ "captures": [
+  {
+   "id": "53016355aa04d1f3",
+   "path": "demo1.pcap",
+   "sha256": "53016355aa04d1f36928ad53663ebb48dbf30907d9e9ef53a303fff9c0260e49"
+  },
+  {
+   "id": "3b01c77a119e2bd1",
+   "path": "demo2.pcap",
+   "sha256": "3b01c77a119e2bd11045782d3e9e2491707f905554d56132178312a076d6094d"
+  }
+ ],
+ "hyps": [
+  {
+   "name": "Кадр MG: magic, тип, 0, длина",
+   "pattern": "4d 47 ?? 00 ??",
+   "port": 9000,
+   "note": "Заголовок: 'MG', тип сообщения, нулевой байт, длина данных",
+   "results": [
+    {
+     "capture_id": "53016355aa04d1f3",
+     "capture": "demo1.pcap",
+     "sha256": "53016355aa04d1f36928ad53663ebb48dbf30907d9e9ef53a303fff9c0260e49",
+     "scope": 6,
+     "hits": 6,
+     "occurrences": 6,
+     "evidence": [
+      {
+       "pkt": 12,
+       "off": 990,
+       "len": 5
+      },
+      {
+       "pkt": 13,
+       "off": 1070,
+       "len": 5
+      },
+      {
+       "pkt": 14,
+       "off": 1147,
+       "len": 5
+      },
+      {
+       "pkt": 15,
+       "off": 1231,
+       "len": 5
+      },
+      {
+       "pkt": 20,
+       "off": 1589,
+       "len": 5
+      },
+      {
+       "pkt": 21,
+       "off": 1672,
+       "len": 5
+      }
+     ]
+    },
+    {
+     "capture_id": "3b01c77a119e2bd1",
+     "capture": "demo2.pcap",
+     "sha256": "3b01c77a119e2bd11045782d3e9e2491707f905554d56132178312a076d6094d",
+     "scope": 6,
+     "hits": 4,
+     "occurrences": 4,
+     "evidence": [
+      {
+       "pkt": 4,
+       "off": 304,
+       "len": 5
+      },
+      {
+       "pkt": 5,
+       "off": 384,
+       "len": 5
+      },
+      {
+       "pkt": 6,
+       "off": 461,
+       "len": 5
+      },
+      {
+       "pkt": 7,
+       "off": 544,
+       "len": 5
+      }
+     ]
+    }
+   ],
+   "layer": "payload"
+  },
+  {
+   "name": "HTTP GET-запрос",
+   "pattern": "47 45 54 20",
+   "port": 80,
+   "note": "Метод GET в начале запроса",
+   "results": [
+    {
+     "capture_id": "53016355aa04d1f3",
+     "capture": "demo1.pcap",
+     "sha256": "53016355aa04d1f36928ad53663ebb48dbf30907d9e9ef53a303fff9c0260e49",
+     "scope": 4,
+     "hits": 2,
+     "occurrences": 2,
+     "evidence": [
+      {
+       "pkt": 4,
+       "off": 304,
+       "len": 4
+      },
+      {
+       "pkt": 6,
+       "off": 507,
+       "len": 4
+      }
+     ]
+    },
+    {
+     "capture_id": "3b01c77a119e2bd1",
+     "capture": "demo2.pcap",
+     "sha256": "3b01c77a119e2bd11045782d3e9e2491707f905554d56132178312a076d6094d",
+     "scope": 2,
+     "hits": 1,
+     "occurrences": 1,
+     "evidence": [
+      {
+       "pkt": 18,
+       "off": 1340,
+       "len": 4
+      }
+     ]
+    }
+   ],
+   "layer": "payload"
+  }
+ ]
+}
